@@ -1,6 +1,10 @@
 # LegitSeat Extension
 
-LegitSeat is a Chrome extension for comparing ticket listings across supported marketplaces. It reads the event details visible on the active page, sends a normalized request to the LegitSeat service, and presents comparable listings in the extension popup.
+LegitSeat is a Chrome extension for inspecting ticket listings and comparing available provider data. Comparisons run in the extension using visible page listings and optional provider credentials. The separate backend receives marketplace reports.
+
+This is a testing build, not a verified universal ticket search engine. Marketplace layouts and API access vary. Event-level starting prices do not guarantee a seat, quantity, or final checkout total. Current-page quantity totals are estimates when the page does not disclose inventory. Verify event date, venue, fees, and availability before buying.
+
+The automated tests use simulated provider responses. Live marketplace navigation and report delivery still require manual testing. Domain signals and Checkout Guardian are aids, not ticket authenticity guarantees.
 
 The Python service is maintained separately in the `legitseat-backend` repository. This repository contains only the browser extension.
 

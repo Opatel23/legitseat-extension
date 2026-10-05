@@ -34,6 +34,25 @@ function getLocalSettings() {
   return chrome.storage.local.get(["ticketmasterApiKey", "seatgeekClientId", "ticketsDevApiKey"]);
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
+  const controller = typeof AbortController === "function" ? new AbortController() : null;
+  let timeoutId;
+  const timer = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      controller?.abort();
+      const seconds = Math.max(1, Math.ceil(timeoutMs / 1000));
+      const error = new Error("Timed out after " + seconds + (seconds === 1 ? " second" : " seconds"));
+      error.name = "TimeoutError";
+      reject(error);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([fetch(url, { ...options, ...(controller ? { signal: controller.signal } : {}) }), timer]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function directGrade(currentPrice, marketLow) {
   if (!currentPrice || !marketLow) return null;
   const difference = (currentPrice - marketLow) / marketLow;
@@ -44,6 +63,18 @@ function directGrade(currentPrice, marketLow) {
 
 function normalizeSeat(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function ticketsDevMarketplace(url) {
+  const domain = extractDomain(url) || "";
+  if (isVendorDomain(domain, "ticketmaster.com") || isVendorDomain(domain, "livenation.com")) return "ticketmaster";
+  if (isVendorDomain(domain, "vividseats.com")) return "vividseats";
+  if (isVendorDomain(domain, "stubhub.com")) return "stubhub";
+  if (isVendorDomain(domain, "seatgeek.com")) return "seatgeek";
+  if (isVendorDomain(domain, "tickpick.com")) return "tickpick";
+  if (isVendorDomain(domain, "gametime.co")) return "gametime";
+  if (domain === "viagogo.com" || domain.endsWith(".viagogo.com") || /^viagogo\.[a-z.]+$/i.test(domain)) return "viagogo";
+  return null;
 }
 
 function waitForTabLoad(tabId, timeoutMs = 18000) {
@@ -119,21 +150,28 @@ async function directComparison(payload) {
   const seatMatches = [];
   const warnings = [];
   const configured = [];
+  const providerStatus = [];
   const wantedSection = normalizeSeat(payload.section);
   const wantedRow = normalizeSeat(payload.row);
-  const requestedQuantity = Math.max(1, Number(payload.quantity) || 1);
+  const requestedQuantity = Number(payload.quantity);
+  const currentTotal = Number(payload.current_price);
+  if (!Number.isInteger(requestedQuantity) || requestedQuantity < 1 || requestedQuantity > 20) throw new Error("Quantity must be between 1 and 20 tickets.");
+  if (!Number.isFinite(currentTotal) || currentTotal <= 0 || currentTotal > 2000000) throw new Error("Enter a valid ticket total before comparing.");
   const isTicketmasterPage = /(?:^|\.)ticketmaster\.com$/i.test(extractDomain(payload.event_url) || "");
   for (const item of Array.isArray(payload.page_listings) ? payload.page_listings.slice(0, 50) : []) {
     const price = Number(item.total_price);
     // Ticketmaster cards often omit available quantity. That does not mean
     // only one seat exists, so never discard an otherwise valid live card.
     const quantity = requestedQuantity;
-    if (!Number.isFinite(price) || price <= 0) continue;
+    if (!Number.isFinite(price) || price <= 0 || price > 100000) continue;
     const sectionMatch = wantedSection && normalizeSeat(item.section) === wantedSection;
     const rowMatch = wantedRow && normalizeSeat(item.row) === wantedRow;
     seatMatches.push({ provider: payload.current_provider || "Current page", is_current_page: true, listing_id: item.listing_id || "", frame_id: item.frame_id, event: payload.query, venue: payload.venue || null, captured_at: new Date().toISOString(), section: item.section || "", row: item.row || "", quantity, total_price: price * quantity, ticket_price: price, fee: null, currency: "USD", url: item.direct_url || payload.event_url, listing_level_url: Boolean(item.direct_url), match_quality: sectionMatch && rowMatch ? "same section and row" : sectionMatch ? "same section" : "event-wide" });
   }
-  if (seatMatches.length) configured.push(isTicketmasterPage ? "Ticketmaster live page" : "Visible page inventory");
+  if (seatMatches.length) {
+    configured.push(isTicketmasterPage ? "Ticketmaster live page" : "Visible page inventory");
+    providerStatus.push({ provider: payload.current_provider || "Current page", status: "live", results: seatMatches.length });
+  }
 
   // Discovery is an event-catalog API, not Ticketmaster's live seat inventory.
   // On Ticketmaster pages, prices must come from the listing cards rendered for
@@ -141,6 +179,7 @@ async function directComparison(payload) {
   // produced the repeated, misleading error this extension used to show.
   if (settings.ticketmasterApiKey && !isTicketmasterPage) {
     configured.push("Ticketmaster");
+    const ticketmasterStart = seatMatches.length + listings.length;
     try {
       const cleanQuery = String(payload.query || "").split("·")[0].replace(/\s*[|–—-]\s*(?:Ticketmaster|SeatGeek|StubHub).*$/i, "").trim();
       const eventId = String(payload.event_url || "").match(/ticketmaster\.[^/]+\/[^?#]*\/event\/([a-z0-9]+)/i)?.[1];
@@ -150,14 +189,14 @@ async function directComparison(payload) {
       let events = [];
       if (eventId) {
         const params = new URLSearchParams({ apikey: settings.ticketmasterApiKey });
-        const response = await fetch(`https://app.ticketmaster.com/discovery/v2/events/${encodeURIComponent(eventId)}.json?${params}`);
+        const response = await fetchWithTimeout(`https://app.ticketmaster.com/discovery/v2/events/${encodeURIComponent(eventId)}.json?${params}`);
         if (response.status === 401 || response.status === 403) throw new Error("API key was rejected");
         if (response.ok) events = [await response.json()];
       }
       if (!events.length) {
         for (const keyword of searches) {
           const params = new URLSearchParams({ apikey: settings.ticketmasterApiKey, keyword, countryCode: "US", size: "20", sort: "relevance,desc" });
-          const response = await fetch(`https://app.ticketmaster.com/discovery/v2/events.json?${params}`);
+          const response = await fetchWithTimeout(`https://app.ticketmaster.com/discovery/v2/events.json?${params}`);
           if (response.status === 401 || response.status === 403) throw new Error("API key was rejected");
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const data = await response.json();
@@ -167,7 +206,7 @@ async function directComparison(payload) {
       }
       const wantedDate = String(payload.event_date || "").slice(0, 10);
       const matchingEvents = events.filter((event) => !wantedDate || event.dates?.start?.localDate === wantedDate);
-      const topPickEvent = matchingEvents[0] || events[0];
+      const topPickEvent = matchingEvents[0];
       let topPicksDenied = false;
       const ticketmasterSeatStart = seatMatches.length;
       if (topPickEvent?.id) {
@@ -179,7 +218,7 @@ async function directComparison(payload) {
           sort: "quality"
         });
         if (payload.section) topPickParams.set("sections", payload.section);
-        const topPickResponse = await fetch(`https://app.ticketmaster.com/top-picks/v1/events/${encodeURIComponent(topPickEvent.id)}?${topPickParams}`);
+        const topPickResponse = await fetchWithTimeout(`https://app.ticketmaster.com/top-picks/v1/events/${encodeURIComponent(topPickEvent.id)}?${topPickParams}`);
         if (topPickResponse.ok) {
           const topPickData = await topPickResponse.json();
           const offers = new Map((topPickData?._embedded?.offer || []).map((offer) => [offer.offerId, offer]));
@@ -244,7 +283,7 @@ async function directComparison(payload) {
       }
       if (topPicksDenied && seatMatches.length === ticketmasterSeatStart) warnings.push("Ticketmaster did not authorize seat-level inventory, and its rendered event page returned no readable listings.");
       let pricedEvents = 0;
-      for (const event of events) {
+      for (const event of matchingEvents) {
         const price = event.priceRanges?.[0];
         if (price?.min != null) {
           pricedEvents += 1;
@@ -253,7 +292,8 @@ async function directComparison(payload) {
       }
       if (!events.length) warnings.push(`Ticketmaster found no events for “${performerOnly}”.`);
       else if (!pricedEvents) warnings.push("Ticketmaster verified the event, but did not provide an event-level price range.");
-    } catch (error) { warnings.push(`Ticketmaster failed: ${error.message}`); }
+      providerStatus.push({ provider: "Ticketmaster", status: seatMatches.length + listings.length > ticketmasterStart ? "live" : "no_results", results: seatMatches.length + listings.length - ticketmasterStart });
+    } catch (error) { warnings.push(`Ticketmaster failed: ${error.message}`); providerStatus.push({ provider: "Ticketmaster", status: "failed", results: 0 }); }
   }
 
   if (isTicketmasterPage && !seatMatches.length) {
@@ -262,9 +302,10 @@ async function directComparison(payload) {
 
   if (settings.seatgeekClientId && String(payload.current_provider || "").toLowerCase() !== "seatgeek") {
     configured.push("SeatGeek");
+    const seatGeekStart = listings.length;
     try {
       const params = new URLSearchParams({ client_id: settings.seatgeekClientId, q: payload.query, per_page: "5" });
-      const response = await fetch(`https://api.seatgeek.com/2/events?${params}`);
+      const response = await fetchWithTimeout(`https://api.seatgeek.com/2/events?${params}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const data = await response.json();
       const wantedDate = String(payload.event_date || "").slice(0, 10);
@@ -272,28 +313,35 @@ async function directComparison(payload) {
       for (const event of events.slice(0, 3)) {
         if (event.stats?.lowest_price != null) listings.push({ provider: "SeatGeek", event: event.title, date: event.datetime_local?.slice(0, 10), lowest: event.stats.lowest_price, average: event.stats.average_price, highest: event.stats.highest_price, currency: "USD", url: event.url, listing_level_url: false, price_type: "event-wide starting price; seat not guaranteed" });
       }
-    } catch (error) { warnings.push(`SeatGeek failed: ${error.message}`); }
+      providerStatus.push({ provider: "SeatGeek", status: listings.length > seatGeekStart ? "live" : "no_results", results: listings.length - seatGeekStart });
+    } catch (error) { warnings.push(`SeatGeek failed: ${error.message}`); providerStatus.push({ provider: "SeatGeek", status: "failed", results: 0 }); }
   }
 
-  if (settings.ticketsDevApiKey && /^https:\/\/(?:[^/]+\.)?(?:ticketmaster\.com|livenation\.com|seatgeek\.com|stubhub\.com|vividseats\.com|tickpick\.com|gametime\.co|viagogo\.com)\//i.test(payload.event_url || "")) {
+  const ticketsDevMarketplaceName = ticketsDevMarketplace(payload.event_url);
+  if (settings.ticketsDevApiKey && ticketsDevMarketplaceName) {
     configured.push("Seat-level inventory");
+    const inventoryStart = seatMatches.length;
     try {
-      const params = new URLSearchParams({ url: payload.event_url });
-      const response = await fetch(`https://api.tickets.dev/v1/capture?${params}`, { headers: { "x-api-key": settings.ticketsDevApiKey } });
+      const params = new URLSearchParams({ url: payload.event_url, apiKey: settings.ticketsDevApiKey });
+      const response = await fetchWithTimeout(`https://api.tickets.dev/v1/${ticketsDevMarketplaceName}/scrape?${params}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const snapshot = await response.json();
       const wantedSection = normalizeSeat(payload.section);
       const wantedRow = normalizeSeat(payload.row);
       for (const item of snapshot.listings || []) {
-        if ((item.quantity || 0) < (payload.quantity || 1)) continue;
+        const sellable = String(item.sellableQuantities || "").split(",").map(Number).filter(Number.isFinite);
+        if ((item.quantity || 0) < requestedQuantity || (sellable.length && !sellable.includes(requestedQuantity))) continue;
         const sectionMatch = wantedSection && normalizeSeat(item.section) === wantedSection;
         const rowMatch = wantedRow && normalizeSeat(item.row) === wantedRow;
         if (wantedSection && !sectionMatch) continue;
         const listingUrl = item.url || item.listingUrl || item.checkoutUrl || null;
-        seatMatches.push({ provider: String(snapshot.source || "Marketplace").replace(/^./, (c) => c.toUpperCase()), event: snapshot.eventName, venue: snapshot.venueName, captured_at: snapshot.capturedAt, section: item.section, row: item.row, quantity: item.quantity, total_price: item.totalPrice, ticket_price: item.ticketPrice, fee: item.fee, currency: snapshot.currency || "USD", url: listingUrl || snapshot.sourceUrl || payload.event_url, listing_level_url: Boolean(listingUrl), match_quality: sectionMatch && rowMatch ? "same section and row" : sectionMatch ? "same section" : "event-wide" });
+        const allInEach = Number(item.totalPrice);
+        if (!Number.isFinite(allInEach) || allInEach <= 0) continue;
+        seatMatches.push({ provider: String(snapshot.source || "Marketplace").replace(/^./, (c) => c.toUpperCase()), event: snapshot.eventName, venue: snapshot.venueName, captured_at: snapshot.capturedAt, section: item.section, row: item.row, quantity: requestedQuantity, available_quantity: item.quantity, total_price: allInEach * requestedQuantity, ticket_price: allInEach, face_price: item.ticketPrice, fee: item.fee, currency: snapshot.currency || "USD", url: listingUrl || snapshot.sourceUrl || payload.event_url, listing_level_url: Boolean(listingUrl), price_type: "all-in per ticket", match_quality: sectionMatch && rowMatch ? "same section and row" : sectionMatch ? "same section" : "event-wide" });
       }
       seatMatches.sort((a, b) => (a.match_quality === "same section and row" ? -1 : 0) - (b.match_quality === "same section and row" ? -1 : 0) || (a.total_price ?? Infinity) - (b.total_price ?? Infinity));
-    } catch (error) { warnings.push(`Seat inventory failed: ${error.message}`); }
+      providerStatus.push({ provider: `tickets.dev/${ticketsDevMarketplaceName}`, status: seatMatches.length > inventoryStart ? "live" : "no_results", results: seatMatches.length - inventoryStart });
+    } catch (error) { warnings.push(`Seat inventory failed: ${error.message}`); providerStatus.push({ provider: `tickets.dev/${ticketsDevMarketplaceName}`, status: "failed", results: 0 }); }
   }
 
   const matchRank = { "same section and row": 0, "same section": 1, "event-wide": 2 };
@@ -301,7 +349,7 @@ async function directComparison(payload) {
   const seatPrices = seatMatches.map((item) => Number(item.total_price)).filter(Number.isFinite);
   const eventPrices = listings.filter((item) => item.currency === "USD").map((item) => Number(item.lowest) * requestedQuantity).filter(Number.isFinite);
   const marketLow = seatPrices.length ? Math.min(...seatPrices) : eventPrices.length ? Math.min(...eventPrices) : null;
-  return { query: payload.query, checked_at: new Date().toISOString(), current_price: payload.current_price, market_low: marketLow, grade: directGrade(payload.current_price, marketLow), requested_seat: { section: payload.section || "", row: payload.row || "", quantity: requestedQuantity }, seat_matches: seatMatches.slice(0, 12), listings: listings.slice(0, 10), configured_providers: configured, warnings, source_mode: "direct" };
+  return { query: payload.query, checked_at: new Date().toISOString(), current_price: payload.current_price, market_low: marketLow, grade: directGrade(payload.current_price, marketLow), requested_seat: { section: payload.section || "", row: payload.row || "", quantity: requestedQuantity }, seat_matches: seatMatches.slice(0, 12), listings: listings.slice(0, 10), configured_providers: configured, provider_status: providerStatus, warnings, source_mode: "direct" };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -313,7 +361,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
   else if (message?.type === "LS_REPORT_DOMAIN") {
-    fetch(`${BACKEND_BASE}/report`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domain: message.domain, reason: message.reason, details: message.details }) })
+    fetchWithTimeout(`${BACKEND_BASE}/report`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ domain: message.domain, reason: message.reason, details: message.details }) }, 15000)
       .then(async (response) => { const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.error || "Report failed"); return body; })
       .then((body) => sendResponse({ ok: true, message: body.message || "Report submitted." }))
       .catch((error) => sendResponse({ ok: false, message: error.message || "The reporting service is unavailable. Try again later." }));

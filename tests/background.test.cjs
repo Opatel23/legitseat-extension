@@ -14,7 +14,7 @@ const context = {
   clearTimeout,
   console,
   chrome: {
-    storage: { local: { get: async () => ({ ticketmasterApiKey: "test-key" }) } },
+    storage: { local: { get: async () => context.onlyTicketsDev ? { ticketsDevApiKey: "inventory-key" } : { ticketmasterApiKey: "test-key" } } },
     runtime: { onMessage: { addListener() {} }, lastError: null },
     tabs: {
       create: async () => ({ id: 99 }),
@@ -26,6 +26,12 @@ const context = {
   },
   fetch: async (url) => {
     const value = String(url);
+    context.lastFetchUrl = value;
+    if (value.includes("api.tickets.dev/v1/vividseats/scrape")) return {
+      ok: true,
+      status: 200,
+      json: async () => ({ source: "vividseats", eventName: "Test Event", venueName: "Test Arena", sourceUrl: "https://www.vividseats.com/test-event", currency: "USD", listings: [{ listingId: "vs-1", section: "224", row: "22", quantity: 4, sellableQuantities: "2,4", ticketPrice: 170, fee: 30, totalPrice: 200 }] })
+    };
     if (value.includes("discovery/v2/events.json")) return {
       ok: true,
       status: 200,
@@ -43,7 +49,7 @@ const context = {
   }
 };
 vm.createContext(context);
-vm.runInContext(source + "\nglobalThis.runComparison = directComparison;", context);
+vm.runInContext(source + "\nglobalThis.runComparison = directComparison; globalThis.runFetchWithTimeout = fetchWithTimeout;", context);
 
 (async () => {
   const result = await context.runComparison({
@@ -67,6 +73,9 @@ vm.runInContext(source + "\nglobalThis.runComparison = directComparison;", conte
   assert.equal(result.market_low, 410);
 
   context.denyTopPicks = true;
+  const wrongDate = await context.runComparison({ query: "Test Event", event_url: "https://seatgeek.com/test-event", event_date: "2026-09-02", quantity: 2, current_price: 500, page_listings: [] });
+  assert.equal(wrongDate.seat_matches.length, 0, "A different event date must not supply comparable seats");
+  assert.equal(wrongDate.listings.length, 0);
   const renderedFallback = await context.runComparison({
     query: "Test Event", event_url: "https://seatgeek.com/test-event", current_provider: "SeatGeek",
     event_date: "2026-09-01", section: "224", row: "22", quantity: 2, current_price: 500,
@@ -78,8 +87,27 @@ vm.runInContext(source + "\nglobalThis.runComparison = directComparison;", conte
   assert.equal(capturedTicketmaster.total_price, 380);
   assert.match(capturedTicketmaster.url, /ls_section=224/);
 
+  context.onlyTicketsDev = true;
+  const normalizedInventory = await context.runComparison({
+    query: "Test Event", event_url: "https://www.vividseats.com/test-event", current_provider: "Vivid Seats",
+    section: "224", row: "22", quantity: 2, current_price: 500, page_listings: []
+  });
+  assert.match(context.lastFetchUrl, /api\.tickets\.dev\/v1\/vividseats\/scrape/);
+  assert.match(context.lastFetchUrl, /apiKey=inventory-key/);
+  assert.equal(normalizedInventory.seat_matches[0].ticket_price, 200, "all-in price should be shown per ticket");
+  assert.equal(normalizedInventory.seat_matches[0].total_price, 400, "all-in price should be multiplied by requested quantity");
+  assert.equal(normalizedInventory.seat_matches[0].face_price, 170);
+  assert.equal(normalizedInventory.provider_status[0].status, "live");
+
   const cardPattern = /\b(?:Section|Sec|Zone)\s*[:#-]?\s*([A-Z0-9][A-Z0-9 .-]{0,25}?)(?=\s*(?:[•·|,]|\s+-\s)?\s*Row\b)/i;
   assert.equal("Section 224 Row 22".match(cardPattern)[1], "224");
   assert.equal("Section s Row 4".match(cardPattern)[1], "s");
+
+  const workingFetch = context.fetch;
+  context.fetch = () => new Promise(() => {});
+  await assert.rejects(context.runFetchWithTimeout("https://example.test", {}, 5), /Timed out after 1 second/);
+  context.fetch = workingFetch;
+  await assert.rejects(context.runComparison({ query: "Test", quantity: 21, current_price: 500 }), /between 1 and 20/);
+  await assert.rejects(context.runComparison({ query: "Test", quantity: 2, current_price: 0 }), /valid ticket total/);
   console.log("LegitSeat comparison tests passed");
 })().catch((error) => { console.error(error); process.exitCode = 1; });

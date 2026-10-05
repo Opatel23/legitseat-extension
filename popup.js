@@ -194,14 +194,12 @@ function ticketCard(item, requestedQuantity) {
   let link;
   if (item.provider === "Current page" || item.is_current_page) {
     link = Object.assign(document.createElement("button"), { type: "button", textContent: "View this seat" });
-    Object.assign(link.style, { width: "max-content", padding: "0", border: "0", background: "none", color: "#66b8ff", fontSize: "9px", cursor: "pointer" });
     link.addEventListener("click", async () => {
       try { await focusCurrentPageListing(item); }
       catch (error) { get("priceStatus").textContent = error.message; }
     });
   } else {
     link = Object.assign(document.createElement("button"), { type: "button", textContent: item.listing_level_url ? "Open this seat" : "Open " + item.provider + " event" });
-    Object.assign(link.style, { width: "max-content", padding: "0", border: "0", background: "none", color: "#66b8ff", fontSize: "9px", cursor: "pointer" });
     link.addEventListener("click", () => {
       try {
         const url = new URL(item.url, currentTab?.url).href;
@@ -210,6 +208,12 @@ function ticketCard(item, requestedQuantity) {
         get("priceStatus").textContent = "This provider did not return a usable listing link.";
       }
     });
+  }
+  link.className = "ticket-action";
+  link.setAttribute("aria-label", link.textContent + ": " + title.textContent + (item.row ? ", row " + item.row : ""));
+  if (!item.is_current_page && item.provider !== "Current page" && !item.url) {
+    link.disabled = true;
+    link.textContent = "Link unavailable";
   }
   const badges = document.createElement("div");
   badges.className = "badges";
@@ -233,6 +237,17 @@ function renderListings(data) {
     ...(data.listings || []).map((item) => ({ ...item, ticket_price: item.lowest, total_price: Number(item.lowest) * requestedQuantity, match_quality: "event-wide" }))
   ];
   items.forEach((item) => container.append(ticketCard(item, requestedQuantity)));
+}
+
+function renderProviderStatus(statuses = []) {
+  const container = get("sourceCoverage");
+  container.replaceChildren();
+  for (const source of statuses) {
+    const pill = document.createElement("span");
+    pill.className = "coverage-pill " + source.status;
+    pill.textContent = `${source.provider}: ${source.status === "live" ? source.results + " live" : source.status === "failed" ? "failed" : "no matches"}`;
+    container.append(pill);
+  }
 }
 
 function parseTicketmasterInventory(pageText) {
@@ -304,13 +319,31 @@ async function readCurrentPageInventory() {
   return [];
 }
 
+let comparisonRevision = 0;
+
 async function compareTickets() {
   const query = get("eventQuery").value.trim();
   const button = get("compareBtn");
+  if (button.disabled) return;
+  const revision = ++comparisonRevision;
   const status = get("priceStatus");
   const grade = get("priceGrade");
+  renderProviderStatus();
   if (query.length < 3) {
     status.textContent = "Enter a clearer event name.";
+    get("eventQuery").focus();
+    return;
+  }
+  const quantity = Number(get("quantity").value);
+  const eachPrice = Number(get("currentPrice").value);
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 20) {
+    status.textContent = "Quantity must be a whole number from 1 to 20.";
+    get("quantity").focus();
+    return;
+  }
+  if (!Number.isFinite(eachPrice) || eachPrice < 0.01 || eachPrice > 100000) {
+    status.textContent = "Enter a per-ticket price from $0.01 to $100,000.";
+    get("currentPrice").focus();
     return;
   }
   button.disabled = true;
@@ -326,6 +359,7 @@ async function compareTickets() {
   } catch (error) {
     scanError = error?.message || "Chrome blocked page access";
   }
+  if (revision !== comparisonRevision) return;
   const marketplace = currentMarketplace();
   if (marketplace && !livePageListings.length) {
     status.textContent = scanError
@@ -336,20 +370,6 @@ async function compareTickets() {
     return;
   }
   if (marketplace) status.textContent = `Captured ${livePageListings.length} live ${marketplace.name} listings. Comparing…`;
-  const quantity = Number(get("quantity").value);
-  const eachPrice = Number(get("currentPrice").value);
-  if (!Number.isInteger(quantity) || quantity < 1) {
-    status.textContent = "Enter the number of tickets before comparing.";
-    button.disabled = false;
-    button.textContent = "Find better live seats";
-    return;
-  }
-  if (!Number.isFinite(eachPrice) || eachPrice <= 0) {
-    status.textContent = "Enter the displayed per-ticket price before comparing.";
-    button.disabled = false;
-    button.textContent = "Find better live seats";
-    return;
-  }
   const payload = {
     query, event_url: currentTab?.url, page_listings: livePageListings, current_provider: marketplace?.name || "Current page", event_date: currentTab?.eventDate || "", venue: currentTab?.venue || "", section: get("section").value.trim(), row: get("row").value.trim(),
     quantity,
@@ -357,8 +377,10 @@ async function compareTickets() {
   };
   try {
     const response = await sendMessage({ type: "LS_COMPARE_TICKETS", payload });
+    if (revision !== comparisonRevision) return;
     if (!response?.ok) throw new Error(response?.message);
     const data = response.data;
+    renderProviderStatus(data.provider_status);
     renderListings(data);
     if (!data.configured_providers.length) {
       status.textContent = data.warnings?.length
@@ -380,10 +402,13 @@ async function compareTickets() {
       }
     }
   } catch (error) {
+    if (revision !== comparisonRevision) return;
     status.textContent = error.message || "Live inventory is unavailable.";
   } finally {
-    button.disabled = false;
-    button.textContent = "Find better live seats";
+    if (revision === comparisonRevision) {
+      button.disabled = false;
+      button.textContent = "Find better live seats";
+    }
   }
 }
 
@@ -516,6 +541,28 @@ async function submitReport() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  get("connectionsBtn").addEventListener("click", () => chrome.runtime.openOptionsPage());
+  for (const id of ["eventQuery", "section", "row", "quantity", "currentPrice"]) {
+    const field = get(id);
+    const label = field.previousElementSibling;
+    if (label?.tagName === "LABEL") label.htmlFor = id;
+    field.setAttribute("aria-describedby", "priceStatus");
+    field.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing) {
+        event.preventDefault();
+        compareTickets();
+      }
+    });
+    get(id).addEventListener("input", () => {
+      comparisonRevision += 1;
+      get("compareBtn").disabled = false;
+      get("compareBtn").textContent = "Find better live seats";
+      get("priceStatus").textContent = "";
+      get("priceGrade").classList.add("hidden");
+      get("listings").replaceChildren();
+      renderProviderStatus();
+    });
+  }
   get("compareBtn").addEventListener("click", compareTickets);
   get("reportBtn").addEventListener("click", () => get("reportForm").classList.toggle("hidden"));
   get("submitReport").addEventListener("click", submitReport);

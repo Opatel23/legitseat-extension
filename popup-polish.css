@@ -1,0 +1,11 @@
+/* Result cards: readable seat names and a consistent keyboard-friendly action. */
+#listings .ticket { padding: 12px 8px; margin: 5px 0; border: 1px solid #ffffff12; border-radius: 10px; background: #08152480; }
+#listings .ticket:last-child { border-bottom: 1px solid #ffffff12; }
+#listings .ticket-title { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+#listings .ticket-meta { min-width: 0; overflow-wrap: anywhere; }
+#listings .ticket-price { font-size: 13px; max-width: 130px; overflow-wrap: anywhere; }
+.ticket-action { grid-column: 1 / -1; justify-self: start; max-width: 100%; padding: 7px 9px; border: 1px solid #58aaff38; border-radius: 7px; background: #237ad51a; color: #99cdff; font-family: inherit; font-size: 10px; font-weight: 600; line-height: 1.4; cursor: pointer; text-align: left; }
+.ticket-action:hover { background: #237ad538; }
+.ticket-action:focus-visible { outline: 2px solid #76bbff; outline-offset: 2px; }
+.ticket-action:disabled { opacity: .55; cursor: default; }
+.ticket .badges { grid-column: 1 / -1; }
