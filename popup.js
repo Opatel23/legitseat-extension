@@ -199,11 +199,12 @@ function ticketCard(item, requestedQuantity) {
       catch (error) { get("priceStatus").textContent = error.message; }
     });
   } else {
-    link = Object.assign(document.createElement("button"), { type: "button", textContent: item.listing_level_url ? "Open this seat" : "Open " + item.provider + " event" });
-    link.addEventListener("click", () => {
+    link = Object.assign(document.createElement("button"), { type: "button", textContent: item.assisted_seat_search ? "Find this seat on " + item.provider : item.listing_level_url ? "Open this seat" : "Open " + item.provider + " event" });
+    link.addEventListener("click", async () => {
       try {
         const url = new URL(item.url, currentTab?.url).href;
-        chrome.tabs.create({ url });
+        const result = await chrome.runtime.sendMessage({ type: "LS_OPEN_URL", url });
+        if (!result?.ok) throw new Error("Unavailable ticket link");
       } catch {
         get("priceStatus").textContent = "This provider did not return a usable listing link.";
       }
@@ -509,7 +510,7 @@ async function checkGuardianDrift() {
   if (current.quantity && current.quantity !== baseline.quantity) changes.push(`Quantity changed: ${baseline.quantity} → ${current.quantity}`);
   if (current.delivery && baseline.delivery && current.delivery.toLowerCase() !== baseline.delivery.toLowerCase()) changes.push(`Delivery changed: ${baseline.delivery} → ${current.delivery}`);
   if (current.domain && current.domain !== baseline.domain) changes.push(`Checkout redirected: ${baseline.domain} → ${current.domain}`);
-  const message = changes.length ? `${changes.length} difference${changes.length === 1 ? "" : "s"}: ${changes.join("; ")}` : "Checkout matches the saved listing ✓";
+  const message = changes.length ? `${changes.length} difference${changes.length === 1 ? "" : "s"}: ${changes.join("; ")}` : "No differences found in readable fields. Missing fields have not been verified.";
   journey.timeline = [...(journey.timeline || []), { at: new Date().toISOString(), message, alert: changes.length > 0 }].slice(-20);
   await chrome.storage.local.set({ [GUARDIAN_KEY]: journey });
   await renderGuardian();

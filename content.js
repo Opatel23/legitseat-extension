@@ -34,7 +34,7 @@
       .seat:focus-visible{outline-offset:-3px}
       @media(max-width:280px){.controls{grid-template-columns:1fr}.seat{grid-template-columns:1fr}.price{grid-column:1;grid-row:auto;text-align:left;max-width:none}.section-title{flex-wrap:wrap;gap:4px}}
     </style>
-    <div class="wrap"><div class="panel"><div class="head"><div><div class="brand">LegitSeat Live</div><div class="source"></div></div><button class="close" type="button" aria-label="Minimize LegitSeat">×</button></div><div class="controls"><input class="preferred-section" aria-label="Preferred section" maxlength="20" placeholder="Preferred section"><input class="preferred-row" aria-label="Preferred row" maxlength="12" placeholder="Preferred row"><input class="qty" aria-label="Ticket quantity" type="number" min="1" max="20" placeholder="Quantity"><input class="entered-price" aria-label="Current price per ticket" type="number" min="0.01" placeholder="Current price each"><button class="compare" type="button">Compare verified sources</button></div><div class="status" role="status">Scanning visible tickets…</div><div class="verdict hidden"></div><div class="coverage"></div><div class="local-title section-title hidden">Visible on this page <span></span></div><div class="list"></div><div class="external"></div><div class="foot">Only verified inventory is ranked. “Exact listing” means the provider supplied a listing-level destination.</div></div><button class="toggle hidden" type="button" aria-label="Open LegitSeat live panel">LegitSeat · <span class="count">0</span> seats</button></div>`;
+    <div class="wrap"><div class="panel"><div class="head"><div><div class="brand">LegitSeat Live</div><div class="source"></div></div><button class="close" type="button" aria-label="Minimize LegitSeat">×</button></div><div class="controls"><input class="preferred-section" aria-label="Preferred section" maxlength="20" placeholder="Preferred section"><input class="preferred-row" aria-label="Preferred row" maxlength="12" placeholder="Preferred row"><input class="qty" aria-label="Ticket quantity" type="number" min="1" max="20" placeholder="Quantity"><input class="entered-price" aria-label="Current price per ticket" type="number" min="0.01" placeholder="Current price each"><button class="compare" type="button">Compare available sources</button></div><div class="status" role="status">Scanning visible tickets…</div><div class="verdict hidden"></div><div class="coverage"></div><div class="local-title section-title hidden">Visible on this page <span></span></div><div class="list"></div><div class="external"></div><div class="foot">Prices reflect captured data. Confirm seats, quantity, and fees on the seller’s page.</div></div><button class="toggle hidden" type="button" aria-label="Open LegitSeat live panel">LegitSeat · <span class="count">0</span> seats</button></div>`;
   document.documentElement.append(host);
 
   const panel = root.querySelector(".panel");
@@ -165,17 +165,17 @@
       const difference = currentTotal - bestAlternativeTotal;
       const ratio = difference / bestAlternativeTotal;
       const tone = ratio <= 0.05 ? "green" : ratio <= 0.20 ? "yellow" : "red";
-      const label = tone === "green" ? "Good price" : tone === "yellow" ? "Compare details" : "Priced high";
+      const label = tone === "green" ? "Near lowest returned price" : tone === "yellow" ? "Compare details" : "Above lowest returned price";
       verdict.className = "verdict " + tone;
-      verdict.textContent = difference > 0.01 ? `${label}: the best verified alternative is $${difference.toFixed(2)} lower for this quantity.` : `${label}: your entered total is at or below the best verified alternative.`;
+      verdict.textContent = difference > 0.01 ? `${label}: the lowest returned option is $${difference.toFixed(2)} lower for this quantity.` : `${label}: your entered total is at or below the lowest returned option.`;
     }
     if (!results.length) {
-      comparisonSummary = "No other configured provider returned verified priced inventory for this event.";
+      comparisonSummary = "No other configured provider returned priced inventory for this event.";
       status.textContent = comparisonSummary;
       return;
     }
     const heading = Object.assign(document.createElement("div"), { className: "section-title" });
-    heading.append("Other verified sources", Object.assign(document.createElement("span"), { textContent: `${results.length} unique` }));
+    heading.append("Other sources", Object.assign(document.createElement("span"), { textContent: `${results.length} unique` }));
     external.append(heading);
     const lowestEach = Math.min(...results.map((item) => Number(item.ticket_price ?? item.lowest)).filter(Number.isFinite));
     for (const [index, item] of results.slice(0, 6).entries()) {
@@ -187,7 +187,7 @@
       button.querySelector(".where").textContent = item.provider + (item.section ? " · Section " + item.section : " · event-wide");
       const each = Number(item.ticket_price ?? item.lowest);
       const distinction = index === 0 ? " · best match" : each === lowestEach ? " · lowest price" : "";
-      button.querySelector(".row").textContent = (item.row ? "Row " + item.row : "Seat not guaranteed") + ` · ${exactDestination ? "exact listing" : "event page"}` + distinction;
+      button.querySelector(".row").textContent = (item.row ? "Row " + item.row : "Seat not guaranteed") + ` · ${exactDestination ? "listing link" : "event page"}` + distinction;
       const total = Number(item.total_price);
       button.querySelector(".price").textContent = "$" + each.toFixed(2) + " ea" + (Number.isFinite(total) ? `\n$${total.toFixed(2)} total` : Number.isInteger(requestedQuantity) && requestedQuantity > 0 ? `\n$${(each * requestedQuantity).toFixed(2)} total` : "");
       if (item.url) button.addEventListener("click", () => openProviderUrl(item.url));

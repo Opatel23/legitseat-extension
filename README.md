@@ -8,7 +8,7 @@ The automated tests use simulated provider responses. Live marketplace navigatio
 
 The Python service is maintained separately in the `legitseat-backend` repository. This repository contains only the browser extension.
 
-## Supported sites
+## Sites with page scanning
 
 - Ticketmaster and Live Nation
 - SeatGeek

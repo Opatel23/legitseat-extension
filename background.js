@@ -56,9 +56,9 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 12000) {
 function directGrade(currentPrice, marketLow) {
   if (!currentPrice || !marketLow) return null;
   const difference = (currentPrice - marketLow) / marketLow;
-  if (difference <= 0.05) return { color: "green", label: "Good price", difference_percent: Math.round(difference * 100) };
+  if (difference <= 0.05) return { color: "green", label: "Near lowest returned price", difference_percent: Math.round(difference * 100) };
   if (difference <= 0.20) return { color: "yellow", label: "Compare details", difference_percent: Math.round(difference * 100) };
-  return { color: "red", label: "Priced high", difference_percent: Math.round(difference * 100) };
+  return { color: "red", label: "Above lowest returned price", difference_percent: Math.round(difference * 100) };
 }
 
 function normalizeSeat(value) {
@@ -245,7 +245,8 @@ async function directComparison(payload) {
               fee: offer?.totalPrice != null && offer?.faceValue != null ? Math.max(0, Number(offer.totalPrice) - Number(offer.faceValue)) : null,
               currency: offer?.currency || "USD",
               url: deepUrl.href,
-              listing_level_url: true,
+              listing_level_url: false,
+              assisted_seat_search: true,
               match_quality: sectionMatch && rowMatch ? "same section and row" : sectionMatch ? "same section" : "event-wide",
               quality_score: pick.quality ?? null
             });
@@ -276,7 +277,8 @@ async function directComparison(payload) {
             fee: null,
             currency: "USD",
             url: assistedUrl.href,
-            listing_level_url: true,
+            listing_level_url: false,
+            assisted_seat_search: true,
             match_quality: sectionMatch && rowMatch ? "same section and row" : sectionMatch ? "same section" : "event-wide"
           });
         }
@@ -291,7 +293,7 @@ async function directComparison(payload) {
         }
       }
       if (!events.length) warnings.push(`Ticketmaster found no events for “${performerOnly}”.`);
-      else if (!pricedEvents) warnings.push("Ticketmaster verified the event, but did not provide an event-level price range.");
+      else if (!pricedEvents) warnings.push("Ticketmaster found the event, but did not provide an event-level price range.");
       providerStatus.push({ provider: "Ticketmaster", status: seatMatches.length + listings.length > ticketmasterStart ? "live" : "no_results", results: seatMatches.length + listings.length - ticketmasterStart });
     } catch (error) { warnings.push(`Ticketmaster failed: ${error.message}`); providerStatus.push({ provider: "Ticketmaster", status: "failed", results: 0 }); }
   }
@@ -329,7 +331,7 @@ async function directComparison(payload) {
       const wantedSection = normalizeSeat(payload.section);
       const wantedRow = normalizeSeat(payload.row);
       for (const item of snapshot.listings || []) {
-        const sellable = String(item.sellableQuantities || "").split(",").map(Number).filter(Number.isFinite);
+        const sellable = String(item.sellableQuantities || "").split(",").filter((value) => value.trim()).map(Number).filter((value) => Number.isInteger(value) && value > 0);
         if ((item.quantity || 0) < requestedQuantity || (sellable.length && !sellable.includes(requestedQuantity))) continue;
         const sectionMatch = wantedSection && normalizeSeat(item.section) === wantedSection;
         const rowMatch = wantedRow && normalizeSeat(item.row) === wantedRow;
@@ -346,7 +348,7 @@ async function directComparison(payload) {
 
   const matchRank = { "same section and row": 0, "same section": 1, "event-wide": 2 };
   seatMatches.sort((a, b) => (matchRank[a.match_quality] ?? 3) - (matchRank[b.match_quality] ?? 3) || Number(b.quality_score ?? -1) - Number(a.quality_score ?? -1) || Number(a.total_price ?? Infinity) - Number(b.total_price ?? Infinity));
-  const seatPrices = seatMatches.map((item) => Number(item.total_price)).filter(Number.isFinite);
+  const seatPrices = seatMatches.filter((item) => item.currency === "USD").map((item) => Number(item.total_price)).filter(Number.isFinite);
   const eventPrices = listings.filter((item) => item.currency === "USD").map((item) => Number(item.lowest) * requestedQuantity).filter(Number.isFinite);
   const marketLow = seatPrices.length ? Math.min(...seatPrices) : eventPrices.length ? Math.min(...eventPrices) : null;
   return { query: payload.query, checked_at: new Date().toISOString(), current_price: payload.current_price, market_low: marketLow, grade: directGrade(payload.current_price, marketLow), requested_seat: { section: payload.section || "", row: payload.row || "", quantity: requestedQuantity }, seat_matches: seatMatches.slice(0, 12), listings: listings.slice(0, 10), configured_providers: configured, provider_status: providerStatus, warnings, source_mode: "direct" };

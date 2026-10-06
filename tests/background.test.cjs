@@ -99,6 +99,17 @@ vm.runInContext(source + "\nglobalThis.runComparison = directComparison; globalT
   assert.equal(normalizedInventory.seat_matches[0].face_price, 170);
   assert.equal(normalizedInventory.provider_status[0].status, "live");
 
+  const inventoryFetch = context.fetch;
+  context.fetch = async (url) => {
+    const response = await inventoryFetch(url);
+    const snapshot = await response.json();
+    snapshot.listings.forEach((item) => { item.sellableQuantities = ""; });
+    return { ...response, json: async () => snapshot };
+  };
+  const unspecifiedSplits = await context.runComparison({ query: "Test Event", event_url: "https://www.vividseats.com/test-event", quantity: 2, current_price: 500 });
+  assert.equal(unspecifiedSplits.seat_matches.length, 1, "An empty split list must not discard otherwise available inventory");
+  context.fetch = inventoryFetch;
+
   const cardPattern = /\b(?:Section|Sec|Zone)\s*[:#-]?\s*([A-Z0-9][A-Z0-9 .-]{0,25}?)(?=\s*(?:[•·|,]|\s+-\s)?\s*Row\b)/i;
   assert.equal("Section 224 Row 22".match(cardPattern)[1], "224");
   assert.equal("Section s Row 4".match(cardPattern)[1], "s");
